@@ -27,6 +27,14 @@ export interface Message {
   createdAt: Date
 }
 
+// Delete the existing database to resolve version conflicts
+try {
+  indexedDB.deleteDatabase('ChatDatabase');
+  console.log('Deleted existing ChatDatabase to resolve version conflicts');
+} catch (error) {
+  console.error('Error deleting database:', error);
+}
+
 class ChatDatabase extends Dexie {
   chats: Dexie.Table<Chat, number>
   messages: Dexie.Table<Message, number>
