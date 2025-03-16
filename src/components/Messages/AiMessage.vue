@@ -5,12 +5,8 @@ import Markdown from '../Markdown.ts'
 import 'highlight.js/styles/github-dark.css'
 import logo from '/logo.png'
 import { computed, ref } from 'vue'
-import { IconCopy, IconCheck, IconRefresh } from '@tabler/icons-vue'
+import { IconCopy, IconCheck, IconRefresh, IconGitBranch } from '@tabler/icons-vue'
 import { useChats } from '../../services/chat.ts'
-import { useAI } from '../../services/useAI.ts'
-import { currentModel, historyMessageLength } from '../../services/appConfig.ts'
-import { db } from '../../services/database.ts'
-import { useApi } from '../../services/api.ts'
 
 type Props = {
   message: Message
@@ -31,6 +27,7 @@ const thought = computed(() => {
 
 const copied = ref(false)
 const isRegenerating = ref(false)
+const showBranches = ref(false)
 
 const copyToClipboard = () => {
   navigator.clipboard.writeText(thought.value[1])
@@ -45,78 +42,42 @@ const copyToClipboard = () => {
     })
 }
 
-const { messages } = useChats()
-const { generate } = useAI()
-const { abort } = useApi()
+const { regenerateMessageWithBranch, availableBranches, switchBranch } = useChats()
 
 const regenerateMessage = async () => {
-  if (!message.id || !message.chatId) return
+  if (!message.id) return
   
   isRegenerating.value = true
   
   try {
-    // Get all messages up to this one
-    const allMessages = await db.messages.where('chatId').equals(message.chatId).toArray()
-    const systemMessage = allMessages.find(m => m.role === 'system')
-    
-    // Find the index of the current message
-    const currentIndex = allMessages.findIndex(m => m.id === message.id)
-    if (currentIndex === -1) return
-    
-    // Get all messages up to but not including the current one
-    const previousMessages = allMessages.slice(0, currentIndex)
-    
-    // Delete the current message
-    if (message.id) await db.messages.delete(message.id)
-    
-    // Find the message in the reactive array and remove it
-    const reactiveIndex = messages.value.findIndex(m => m.id === message.id)
-    if (reactiveIndex !== -1) {
-      messages.value.splice(reactiveIndex, 1)
-    }
-    
-    // Generate a new response
-    await generate(
-      currentModel.value,
-      previousMessages,
-      systemMessage,
-      historyMessageLength.value,
-      (data) => {
-        // Handle partial response
-        const existingMessage = messages.value.find(m => m.chatId === message.chatId && m.role === 'assistant' && !m.id)
-        if (existingMessage) {
-          existingMessage.content += data.content
-        } else {
-          // Create a new message
-          const newMessage = {
-            chatId: message.chatId,
-            role: 'assistant' as const,
-            content: data.content,
-            createdAt: new Date(),
-          }
-          messages.value.push(newMessage)
-        }
-      },
-      async (data) => {
-        // Handle completion
-        const existingMessage = messages.value.find(m => m.chatId === message.chatId && m.role === 'assistant' && !m.id)
-        if (existingMessage) {
-          // Save the message to the database
-          const id = await db.messages.add({
-            ...existingMessage,
-            content: data.content,
-          })
-          existingMessage.id = id
-          existingMessage.content = data.content
-        }
-        isRegenerating.value = false
-      }
-    )
+    await regenerateMessageWithBranch(message.id)
   } catch (error) {
     console.error('Failed to regenerate message:', error)
+  } finally {
     isRegenerating.value = false
   }
 }
+
+const toggleBranches = () => {
+  showBranches.value = !showBranches.value
+}
+
+const selectBranch = async (branchId: number) => {
+  await switchBranch(branchId)
+  showBranches.value = false
+}
+
+// Get branches that have this message's parent as their parent
+const messageBranches = computed(() => {
+  if (!message.parentId) return []
+  
+  return availableBranches.value.filter(branch => {
+    const firstAssistantMessage = branch.messages.find(m => m.role === 'assistant')
+    return firstAssistantMessage && firstAssistantMessage.parentId === message.parentId
+  })
+})
+
+const hasBranches = computed(() => messageBranches.value.length > 1)
 </script>
 
 <template>
@@ -143,7 +104,19 @@ const regenerateMessage = async () => {
         <Markdown :source="thought[1]" />
       </div>
     </div>
+    
     <div class="absolute bottom-2 right-2 flex space-x-2">
+      <button 
+        v-if="hasBranches"
+        @click="toggleBranches" 
+        class="p-1 rounded-md bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 transition-colors opacity-70 hover:opacity-100"
+        :title="showBranches ? 'Hide branches' : 'Show alternative responses'"
+      >
+        <IconGitBranch class="size-4" :class="{ 'text-blue-500': showBranches }" />
+        <span class="absolute -top-1 -right-1 bg-blue-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">
+          {{ messageBranches.length }}
+        </span>
+      </button>
       <button 
         @click="regenerateMessage" 
         class="p-1 rounded-md bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 transition-colors opacity-70 hover:opacity-100"
@@ -160,6 +133,26 @@ const regenerateMessage = async () => {
         <IconCheck v-if="copied" class="size-4 text-green-500" />
         <IconCopy v-else class="size-4" />
       </button>
+    </div>
+    
+    <!-- Branch selector dropdown -->
+    <div 
+      v-if="showBranches && hasBranches" 
+      class="absolute bottom-10 right-2 bg-white dark:bg-gray-700 rounded-md shadow-lg p-2 z-10 w-48"
+    >
+      <div class="text-xs font-medium mb-2 text-gray-500 dark:text-gray-300">Alternative responses</div>
+      <div 
+        v-for="branch in messageBranches" 
+        :key="branch.id"
+        @click="selectBranch(branch.id)"
+        class="p-2 text-xs rounded-md cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
+        :class="{ 'bg-blue-50 dark:bg-blue-900': branch.isActive }"
+      >
+        <div class="flex items-center">
+          <IconGitBranch class="size-3 mr-1" />
+          <span class="truncate">Version {{ branch.id }}</span>
+        </div>
+      </div>
     </div>
   </div>
 </template>

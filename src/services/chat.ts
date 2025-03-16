@@ -14,6 +14,8 @@ const activeChat = ref<Chat | null>(null)
 const messages = ref<Message[]>([])
 const systemPrompt = ref<Message>()
 const ongoingAiMessages = ref<Map<number, Message>>(new Map())
+const activeBranch = ref<number | undefined>(undefined)
+const branches = ref<Map<number, Message[]>>(new Map()) // Map of branchId to messages
 
 // Database Layer
 const dbLayer = {
@@ -64,6 +66,26 @@ const dbLayer = {
   async clearMessages() {
     return db.messages.clear()
   },
+
+  async getMessagesInBranch(chatId: number, branchId: number) {
+    return db.messages
+      .where('chatId')
+      .equals(chatId)
+      .and(message => message.branchId === branchId)
+      .sortBy('order')
+  },
+
+  async getMessageBranches(chatId: number, messageId: number) {
+    return db.messages
+      .where('chatId')
+      .equals(chatId)
+      .and(message => message.parentId === messageId)
+      .toArray()
+  },
+
+  async updateChatActiveBranch(chatId: number, branchId: number) {
+    return db.chats.update(chatId, { activeBranchId: branchId })
+  }
 }
 
 export function useChats() {
@@ -76,9 +98,33 @@ export function useChats() {
   )
   const hasActiveChat = computed(() => activeChat.value !== null)
   const hasMessages = computed(() => messages.value.length > 0)
+  const availableBranches = computed(() => {
+    if (!activeChat.value) return []
+    
+    // Group messages by branchId
+    const branchMap = new Map<number, Message[]>()
+    messages.value.forEach(msg => {
+      if (msg.branchId) {
+        if (!branchMap.has(msg.branchId)) {
+          branchMap.set(msg.branchId, [])
+        }
+        branchMap.get(msg.branchId)!.push(msg)
+      }
+    })
+    
+    // Convert to array of branch objects
+    return Array.from(branchMap.entries()).map(([id, msgs]) => ({
+      id,
+      messages: msgs,
+      isActive: id === activeBranch.value
+    }))
+  })
 
   // Methods for state mutations
-  const setActiveChat = (chat: Chat) => (activeChat.value = chat)
+  const setActiveChat = (chat: Chat) => {
+    activeChat.value = chat
+    activeBranch.value = chat.activeBranchId
+  }
   const setMessages = (newMessages: Message[]) => (messages.value = newMessages)
 
   const initialize = async () => {
@@ -99,11 +145,18 @@ export function useChats() {
       const chat = await dbLayer.getChat(chatId)
       if (chat) {
         setActiveChat(chat)
-        const chatMessages = await dbLayer.getMessages(chatId)
-        setMessages(chatMessages)
-        if (activeChat.value) {
-          await switchModel(activeChat.value.model)
+        
+        // Load messages for the active branch if set, otherwise load all messages
+        if (chat.activeBranchId) {
+          const branchMessages = await dbLayer.getMessagesInBranch(chatId, chat.activeBranchId)
+          setMessages(branchMessages)
+        } else {
+          const allMessages = await dbLayer.getMessages(chatId)
+          setMessages(allMessages)
         }
+        
+        // Set system prompt
+        systemPrompt.value = messages.value.find((m) => m.role === 'system')
       }
     } catch (error) {
       console.error(`Failed to switch to chat with ID ${chatId}:`, error)
@@ -207,19 +260,32 @@ export function useChats() {
   const regenerateResponse = async () => {
     if (!activeChat.value) return
     const currentChatId = activeChat.value.id!
-    const message = messages.value[messages.value.length - 1]
-    if (message && message.role === 'assistant') {
-      if (message.id) db.messages.delete(message.id)
-      messages.value.pop()
-    }
+    
+    // Find the last assistant message
+    const lastAssistantMessageIndex = [...messages.value].reverse().findIndex(m => m.role === 'assistant')
+    if (lastAssistantMessageIndex === -1) return
+    
+    const lastAssistantMessage = messages.value[messages.value.length - 1 - lastAssistantMessageIndex]
+    
+    // Find the parent user message
+    const parentMessage = messages.value.find(m => m.id === lastAssistantMessage.parentId)
+    if (!parentMessage) return
+    
+    // Create a new branch from the parent message
+    const newBranchId = await createNewBranch(parentMessage.id!)
+    if (!newBranchId) return
+    
+    // Get messages in the new branch
+    const branchMessages = await dbLayer.getMessagesInBranch(currentChatId, newBranchId)
+    
     try {
       await generate(
         currentModel.value,
-        messages.value,
+        branchMessages,
         systemPrompt.value,
         historyMessageLength.value,
-        (data) => handleAiPartialResponse(data, currentChatId),
-        (data) => handleAiCompletion(data, currentChatId),
+        (data) => handleAiPartialResponse(data, currentChatId, newBranchId),
+        (data) => handleAiCompletion(data, currentChatId, newBranchId),
       )
     } catch (error) {
       if (error instanceof Error) {
@@ -232,13 +298,16 @@ export function useChats() {
     }
   }
 
-  const handleAiPartialResponse = (data: ChatPartResponse, chatId: number) => {
-    ongoingAiMessages.value.has(chatId)
-      ? appendToAiMessage(data.message.content, chatId)
-      : startAiMessage(data.message.content, chatId)
+  // Modified to support branches
+  const handleAiPartialResponse = (data: ChatPartResponse, chatId: number, branchId?: number) => {
+    if (ongoingAiMessages.value.has(chatId)) {
+      appendToAiMessage(data.message.content, chatId)
+    } else {
+      startAiMessage(data.message.content, chatId, branchId)
+    }
   }
 
-  const handleAiCompletion = async (data: ChatCompletedResponse, chatId: number) => {
+  const handleAiCompletion = async (data: ChatCompletedResponse, chatId: number, branchId?: number) => {
     const aiMessage = ongoingAiMessages.value.get(chatId)
     if (aiMessage) {
       try {
@@ -288,18 +357,27 @@ export function useChats() {
     }
   }
 
-  const startAiMessage = async (initialContent: string, chatId: number) => {
+  // Modified to support branches
+  const startAiMessage = async (initialContent: string, chatId: number, branchId?: number) => {
     const message: Message = {
       chatId: chatId,
       role: 'assistant',
       content: initialContent,
       createdAt: new Date(),
+      branchId: branchId || activeBranch.value,
+      order: messages.value.length
+    }
+    
+    // Set parent ID if there's a previous message
+    const userMessages = messages.value.filter(m => m.role === 'user')
+    if (userMessages.length > 0) {
+      message.parentId = userMessages[userMessages.length - 1].id
     }
 
     try {
       message.id = await dbLayer.addMessage(message)
-      ongoingAiMessages.value.set(chatId, message)
       messages.value.push(message)
+      ongoingAiMessages.value.set(chatId, message)
     } catch (error) {
       console.error('Failed to start AI message:', error)
     }
@@ -356,25 +434,144 @@ export function useChats() {
     })
   }
 
+  const switchBranch = async (branchId: number) => {
+    if (!activeChat.value) return
+    
+    try {
+      // Update active branch in database
+      await dbLayer.updateChatActiveBranch(activeChat.value.id!, branchId)
+      
+      // Update active branch in memory
+      activeChat.value.activeBranchId = branchId
+      activeBranch.value = branchId
+      
+      // Load messages for this branch
+      const branchMessages = await dbLayer.getMessagesInBranch(activeChat.value.id!, branchId)
+      setMessages(branchMessages)
+    } catch (error) {
+      console.error(`Failed to switch to branch with ID ${branchId}:`, error)
+    }
+  }
+
+  const createNewBranch = async (parentMessageId: number) => {
+    if (!activeChat.value) return
+    
+    try {
+      // Generate a new branch ID (using timestamp for simplicity)
+      const newBranchId = Date.now()
+      
+      // Get all messages up to and including the parent message
+      const allMessages = await dbLayer.getMessages(activeChat.value.id!)
+      const parentIndex = allMessages.findIndex(m => m.id === parentMessageId)
+      
+      if (parentIndex === -1) {
+        console.error(`Parent message with ID ${parentMessageId} not found`)
+        return
+      }
+      
+      // Get messages up to the parent message
+      const messagesUpToParent = allMessages.slice(0, parentIndex + 1)
+      
+      // Create copies of these messages with the new branch ID
+      const branchMessages: Message[] = []
+      
+      for (let i = 0; i < messagesUpToParent.length; i++) {
+        const originalMsg = messagesUpToParent[i]
+        
+        // Skip system messages as they're shared across branches
+        if (originalMsg.role === 'system') {
+          branchMessages.push(originalMsg)
+          continue
+        }
+        
+        // Create a copy with the new branch ID
+        const msgCopy: Message = {
+          ...originalMsg,
+          id: undefined, // Let the database assign a new ID
+          branchId: newBranchId,
+          order: i
+        }
+        
+        // Save to database
+        const newId = await dbLayer.addMessage(msgCopy)
+        msgCopy.id = newId
+        branchMessages.push(msgCopy)
+      }
+      
+      // Switch to the new branch
+      await switchBranch(newBranchId)
+      
+      return newBranchId
+    } catch (error) {
+      console.error(`Failed to create new branch from message ${parentMessageId}:`, error)
+    }
+  }
+
+  const regenerateMessageWithBranch = async (messageId: number) => {
+    if (!activeChat.value) return
+    
+    try {
+      // Find the message
+      const messageToRegenerate = messages.value.find(m => m.id === messageId)
+      if (!messageToRegenerate) {
+        console.error(`Message with ID ${messageId} not found`)
+        return
+      }
+      
+      // Create a new branch from the parent message
+      const parentMessage = messages.value.find(m => m.id === messageToRegenerate.parentId)
+      if (!parentMessage) {
+        console.error(`Parent message not found for message ${messageId}`)
+        return
+      }
+      
+      const newBranchId = await createNewBranch(parentMessage.id!)
+      if (!newBranchId) return
+      
+      // Get all messages in the new branch
+      const branchMessages = await dbLayer.getMessagesInBranch(activeChat.value.id!, newBranchId)
+      
+      // Generate a new response
+      await generate(
+        currentModel.value,
+        branchMessages,
+        systemPrompt.value,
+        historyMessageLength.value,
+        (data) => handleAiPartialResponse(data, activeChat.value!.id!, newBranchId),
+        (data) => handleAiCompletion(data, activeChat.value!.id!, newBranchId),
+      )
+      
+      return newBranchId
+    } catch (error) {
+      console.error(`Failed to regenerate message ${messageId} with new branch:`, error)
+    }
+  }
+
   return {
     chats,
     sortedChats,
     activeChat,
     messages,
-    hasMessages,
+    systemPrompt,
     hasActiveChat,
-    renameChat,
-    switchModel,
+    hasMessages,
+    ongoingAiMessages,
+    availableBranches,
+    activeBranch,
+    
+    initialize,
     startNewChat,
     switchChat,
-    deleteChat,
     addUserMessage,
     regenerateResponse,
-    addSystemMessage,
-    initialize,
-    wipeDatabase,
     abort,
+    wipeDatabase,
+    deleteChat,
+    renameChat,
     exportChats,
     importChats,
+    switchBranch,
+    createNewBranch,
+    regenerateMessageWithBranch
   }
 }
