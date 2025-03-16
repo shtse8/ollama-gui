@@ -21,16 +21,22 @@ const onSubmit = () => {
   }
 
   if (isInputValid.value) {
-    if (isSystemMessage.value) {
-      addSystemMessage(userInput.value.trim())
-    } else {
-      addUserMessage(userInput.value.trim()).then(() => {
-        isAiResponding.value = false
-      })
-    }
+    const messageContent = userInput.value.trim()
     userInput.value = ''
-    if (!isSystemMessage.value) {
+    
+    if (isSystemMessage.value) {
+      addSystemMessage(messageContent)
+    } else {
       isAiResponding.value = true
+      
+      addUserMessage(messageContent)
+        .then(() => {
+          isAiResponding.value = false
+        })
+        .catch((error) => {
+          console.error('Error sending message:', error)
+          isAiResponding.value = false
+        })
     }
   }
 }
