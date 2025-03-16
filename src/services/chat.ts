@@ -356,6 +356,39 @@ export function useChats() {
     })
   }
 
+  const editMessage = async (messageId: number, newContent: string) => {
+    if (!activeChat.value) return
+    
+    try {
+      // Update the message in the database
+      await dbLayer.updateMessage(messageId, { content: newContent })
+      
+      // Update the message in the UI
+      const index = messages.value.findIndex(m => m.id === messageId)
+      if (index !== -1) {
+        messages.value[index].content = newContent
+        
+        // If this is not the last message, we need to remove all subsequent messages
+        // as they would no longer make sense in the conversation
+        if (index < messages.value.length - 1) {
+          const subsequentMessages = messages.value.slice(index + 1)
+          
+          // Delete subsequent messages from the database
+          for (const msg of subsequentMessages) {
+            if (msg.id) {
+              await dbLayer.deleteMessage(msg.id)
+            }
+          }
+          
+          // Remove subsequent messages from the UI
+          messages.value = messages.value.slice(0, index + 1)
+        }
+      }
+    } catch (error) {
+      console.error(`Failed to edit message with ID ${messageId}:`, error)
+    }
+  }
+
   return {
     chats,
     sortedChats,
@@ -376,5 +409,6 @@ export function useChats() {
     abort,
     exportChats,
     importChats,
+    editMessage
   }
 }
