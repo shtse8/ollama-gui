@@ -3,7 +3,7 @@ import { Message } from '../../services/database.ts'
 import { avatarUrl, enableMarkdown } from '../../services/appConfig.ts'
 import Markdown from '../Markdown.ts'
 import { ref } from 'vue'
-import { IconEdit, IconX, IconDeviceFloppy, IconSend } from '@tabler/icons-vue'
+import { IconEdit, IconX, IconDeviceFloppy } from '@tabler/icons-vue'
 import { useChats } from '../../services/chat.ts'
 
 type Props = {
@@ -15,7 +15,7 @@ const isEditing = ref(false)
 const editedContent = ref('')
 const isGenerating = ref(false)
 
-const { editMessage, addUserMessage } = useChats()
+const { editMessage } = useChats()
 
 const startEditing = () => {
   editedContent.value = message.content
@@ -42,27 +42,8 @@ const saveEdit = async () => {
     await editMessage(message.id, editedContent.value)
     console.log('Edit saved successfully')
     isEditing.value = false
-    
-    // Automatically generate a new response after editing
-    console.log('Automatically generating new response after edit')
-    generateNewResponse()
   } catch (error) {
     console.error('Failed to save edited message:', error)
-  }
-}
-
-const generateNewResponse = async () => {
-  if (isGenerating.value) return
-  
-  isGenerating.value = true
-  try {
-    console.log('Generating new response for message:', message.content)
-    await addUserMessage(message.content)
-    console.log('New response generated')
-  } catch (error) {
-    console.error('Failed to generate new response:', error)
-  } finally {
-    isGenerating.value = false
   }
 }
 </script>
@@ -117,16 +98,8 @@ const generateNewResponse = async () => {
       </div>
     </div>
     
-    <!-- Action buttons -->
-    <div v-if="!isEditing" class="absolute bottom-2 right-2 flex space-x-2">
-      <button 
-        @click="generateNewResponse" 
-        class="p-1 rounded-md bg-blue-500 hover:bg-blue-600 text-white transition-colors opacity-70 hover:opacity-100"
-        title="Generate new response"
-        :disabled="isGenerating"
-      >
-        <IconSend class="size-4" :class="{ 'animate-pulse': isGenerating }" />
-      </button>
+    <!-- Edit button -->
+    <div v-if="!isEditing" class="absolute bottom-2 right-2">
       <button 
         @click="startEditing" 
         class="p-1 rounded-md bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 transition-colors opacity-70 hover:opacity-100"

@@ -442,6 +442,24 @@ export function useChats() {
           console.log('Removing subsequent messages from UI')
           messages.value = messages.value.slice(0, index + 1)
           console.log('Messages after removal:', messages.value.length)
+          
+          // Generate a new AI response based on the edited message
+          console.log('Generating new AI response based on edited message')
+          const currentChatId = activeChat.value.id!
+          
+          try {
+            await generate(
+              currentModel.value,
+              messages.value,
+              systemPrompt.value,
+              historyMessageLength.value,
+              (data) => handleAiPartialResponse(data, currentChatId),
+              (data) => handleAiCompletion(data, currentChatId)
+            )
+            console.log('New AI response generated successfully')
+          } catch (error) {
+            console.error('Failed to generate new AI response:', error)
+          }
         } else {
           console.log('Message is the last one, no need to remove subsequent messages')
         }
