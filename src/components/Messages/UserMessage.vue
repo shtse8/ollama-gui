@@ -4,13 +4,13 @@ import { avatarUrl, enableMarkdown } from '../../services/appConfig.ts'
 import Markdown from '../Markdown.ts'
 import { ref, computed } from 'vue'
 import { IconEdit, IconX, IconDeviceFloppy } from '@tabler/icons-vue'
-import { useChat } from '../../services/chat'
+import { useChats } from '../../services/chat'
 
 const props = defineProps<{
   message: Message
 }>()
 
-const chat = useChat()
+const chat = useChats()
 const isEditing = ref(false)
 const editedContent = ref('')
 const isGenerating = ref(false)

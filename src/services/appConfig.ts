@@ -55,6 +55,10 @@ export function useConfig() {
     return config?.systemPrompt ?? null
   }
 
+  const getSystemPrompt = async () => {
+    return getCurrentSystemMessage()
+  }
+
   const generateIdFromModel = async (model: string): Promise<number> => {
     let hash = 0
     for (let i = 0; i < model.length; i++) {
@@ -78,5 +82,6 @@ export function useConfig() {
     initializeConfig,
     setConfig,
     getCurrentSystemMessage,
+    getSystemPrompt
   }
 }

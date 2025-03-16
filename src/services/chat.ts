@@ -5,7 +5,7 @@ import { useAI } from './useAI.ts'
 import { ChatCompletedResponse, ChatPartResponse, useApi } from './api.ts'
 import { v4 as uuidv4 } from 'uuid'
 import { useModels } from './models'
-import { useToast } from 'vue-toast-notification'
+import { useToast } from './toast'
 
 interface ChatExport extends Chat {
   messages: Message[]
@@ -78,7 +78,7 @@ export function useChats() {
   const { generate } = useAI()
   const { abort } = useApi()
   const $toast = useToast()
-  const { getSystemPrompt } = useConfig()
+  const { getSystemPrompt, getCurrentSystemMessage } = useConfig()
   const { getModel } = useModels()
 
   // Computed
@@ -153,7 +153,7 @@ export function useChats() {
       chats.value.push(newChat)
       setActiveChat(newChat)
       setMessages([])
-      await addSystemMessage(await getSystemPrompt())
+      await addSystemMessage(await getCurrentSystemMessage())
     } catch (error) {
       console.error('Failed to start a new chat:', error)
     }
@@ -628,7 +628,7 @@ export function useChats() {
       }
       
       // Generate a new AI response
-      await sendUserMessage(newContent)
+      await addUserMessage(newContent)
     } catch (error) {
       console.error('Error editing message with branching:', error)
     }
@@ -669,15 +669,15 @@ export function useChats() {
       abortController.value = new AbortController()
       
       // Generate the response
-      const contextMessages = messages.value.map(m => ({
-        role: m.role,
-        content: m.content
-      }))
-      
       await generate(
         model,
-        contextMessages,
-        systemPrompt,
+        messages.value,
+        systemPrompt ? { 
+          chatId: currentChatId.value, 
+          role: 'system', 
+          content: systemPrompt, 
+          createdAt: new Date() 
+        } : undefined,
         historyMessageLength.value,
         (data) => {
           // Update the message in the UI
@@ -692,14 +692,13 @@ export function useChats() {
         },
         (data) => {
           console.log('Response completed')
-          handleAiCompletion(data, currentChatId.value!)
-        },
-        { signal: abortController.value.signal }
+          handleAiCompletion(data, currentChatId.value as number)
+        }
       )
       
       // Reset the streaming message
       streamingMessage.value = null
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error generating AI response:', error)
       if (error.name !== 'AbortError') {
         $toast.error('Failed to generate AI response')

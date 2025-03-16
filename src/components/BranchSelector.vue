@@ -27,9 +27,9 @@
 
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
-import { useChat } from '../services/chat'
+import { useChats } from '../services/chat'
 
-const chat = useChat()
+const chat = useChats()
 const branches = ref<any[]>([])
 const activeBranchId = ref<number | undefined>()
 
@@ -39,7 +39,7 @@ onMounted(async () => {
 })
 
 // Watch for changes in the active chat
-watch(() => chat.getActiveChat(), async () => {
+watch(() => chat.activeChat, async () => {
   await loadBranches()
 })
 

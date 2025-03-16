@@ -29,11 +29,13 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import { useChat } from '../services/chat'
+import { useChats } from '../services/chat'
 import UserMessage from '../components/Messages/UserMessage.vue'
 import AiMessage from '../components/Messages/AiMessage.vue'
 import ChatInput from '../components/ChatInput.vue'
 import BranchSelector from '../components/BranchSelector.vue'
+
+const { messages } = useChats()
 
 // ... existing code ...
 </script>
