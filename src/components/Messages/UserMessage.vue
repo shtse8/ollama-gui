@@ -42,6 +42,10 @@ const saveEdit = async () => {
     await editMessage(message.id, editedContent.value)
     console.log('Edit saved successfully')
     isEditing.value = false
+    
+    // Automatically generate a new response after editing
+    console.log('Automatically generating new response after edit')
+    generateNewResponse()
   } catch (error) {
     console.error('Failed to save edited message:', error)
   }
@@ -52,7 +56,7 @@ const generateNewResponse = async () => {
   
   isGenerating.value = true
   try {
-    console.log('Generating new response for edited message')
+    console.log('Generating new response for message:', message.content)
     await addUserMessage(message.content)
     console.log('New response generated')
   } catch (error) {
