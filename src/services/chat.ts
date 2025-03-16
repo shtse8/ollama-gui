@@ -399,35 +399,58 @@ export function useChats() {
   }
 
   const editMessage = async (messageId: number, newContent: string) => {
-    if (!activeChat.value) return
+    console.log('Editing message with ID:', messageId)
+    console.log('New content:', newContent)
+    
+    if (!activeChat.value) {
+      console.error('No active chat found')
+      return
+    }
     
     try {
+      console.log('Updating message in database...')
       // Update the message in the database
       await dbLayer.updateMessage(messageId, { content: newContent })
+      console.log('Message updated in database')
       
       // Update the message in the UI
       const index = messages.value.findIndex(m => m.id === messageId)
+      console.log('Message index in UI array:', index)
+      
       if (index !== -1) {
+        console.log('Updating message in UI')
         messages.value[index].content = newContent
+        console.log('Message updated in UI')
         
         // If this is not the last message, we need to remove all subsequent messages
         // as they would no longer make sense in the conversation
         if (index < messages.value.length - 1) {
+          console.log('Message is not the last one, removing subsequent messages')
           const subsequentMessages = messages.value.slice(index + 1)
+          console.log('Subsequent messages count:', subsequentMessages.length)
           
           // Delete subsequent messages from the database
           for (const msg of subsequentMessages) {
             if (msg.id) {
+              console.log('Deleting message with ID:', msg.id)
               await dbLayer.deleteMessage(msg.id)
+              console.log('Message deleted from database')
             }
           }
           
           // Remove subsequent messages from the UI
+          console.log('Removing subsequent messages from UI')
           messages.value = messages.value.slice(0, index + 1)
+          console.log('Messages after removal:', messages.value.length)
+        } else {
+          console.log('Message is the last one, no need to remove subsequent messages')
         }
+      } else {
+        console.error('Message not found in UI array')
       }
     } catch (error) {
       console.error(`Failed to edit message with ID ${messageId}:`, error)
+      throw error
     }
   }
 
