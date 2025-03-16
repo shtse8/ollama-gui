@@ -2,50 +2,48 @@
 import { Message } from '../../services/database.ts'
 import { avatarUrl, enableMarkdown } from '../../services/appConfig.ts'
 import Markdown from '../Markdown.ts'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { IconEdit, IconX, IconDeviceFloppy } from '@tabler/icons-vue'
-import { useChats } from '../../services/chat.ts'
+import { useChat } from '../../services/chat'
 
-type Props = {
+const props = defineProps<{
   message: Message
-}
+}>()
 
-const { message } = defineProps<Props>()
+const chat = useChat()
 const isEditing = ref(false)
 const editedContent = ref('')
 const isGenerating = ref(false)
 
-const { editMessage } = useChats()
-
-const startEditing = () => {
-  editedContent.value = message.content
+const startEdit = () => {
+  editedContent.value = props.message.content
   isEditing.value = true
 }
 
-const cancelEditing = () => {
+const cancelEdit = () => {
   isEditing.value = false
-  editedContent.value = ''
 }
 
 const saveEdit = async () => {
-  if (!message.id) {
-    console.error('Cannot save edit: message has no ID')
-    return
+  console.log('Saving edit with content:', editedContent.value)
+  
+  if (props.message.id) {
+    // Use the branching version of editMessage
+    await chat.editMessageWithBranching(props.message.id, editedContent.value)
+    console.log('Edit saved and new branch created')
   }
   
-  console.log('Saving edited message with ID:', message.id)
-  console.log('Original content:', message.content)
-  console.log('Edited content:', editedContent.value)
-  
-  try {
-    console.log('Calling editMessage function...')
-    await editMessage(message.id, editedContent.value)
-    console.log('Edit saved successfully')
-    isEditing.value = false
-  } catch (error) {
-    console.error('Failed to save edited message:', error)
-  }
+  isEditing.value = false
 }
+
+const formattedContent = computed(() => {
+  return props.message.content.split('\n').map(line => {
+    if (line.trim().startsWith('```')) {
+      return line
+    }
+    return line
+  }).join('\n')
+})
 </script>
 
 <template>
@@ -62,13 +60,13 @@ const saveEdit = async () => {
       <!-- Normal display mode -->
       <template v-if="!isEditing">
         <code v-if="!enableMarkdown" class="whitespace-pre-line text-gray-900 dark:text-gray-100">
-          {{ message.content }}
+          {{ formattedContent }}
         </code>
         <div
           v-else
           class="prose prose-base max-w-full dark:prose-invert prose-headings:font-semibold prose-h1:text-lg prose-h2:text-base prose-h3:text-base prose-p:text-gray-900 prose-p:first:mt-0 prose-a:text-blue-600 prose-code:text-sm prose-code:text-gray-900 prose-pre:p-2 dark:prose-p:text-gray-100 dark:prose-code:text-gray-100"
         >
-          <Markdown :source="message.content" />
+          <Markdown :source="formattedContent" />
         </div>
       </template>
       
@@ -81,7 +79,7 @@ const saveEdit = async () => {
         ></textarea>
         <div class="flex justify-end mt-2 space-x-2">
           <button 
-            @click="cancelEditing" 
+            @click="cancelEdit" 
             class="px-2 py-1 text-xs rounded-md bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 transition-colors"
           >
             <IconX class="size-4 mr-1 inline" />
@@ -101,7 +99,7 @@ const saveEdit = async () => {
     <!-- Edit button -->
     <div v-if="!isEditing" class="absolute bottom-2 right-2">
       <button 
-        @click="startEditing" 
+        @click="startEdit" 
         class="p-1 rounded-md bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 transition-colors opacity-70 hover:opacity-100"
         title="Edit message"
       >

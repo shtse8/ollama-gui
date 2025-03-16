@@ -15,6 +15,7 @@ export interface Chat {
   name: string
   model: string
   createdAt: Date
+  activeBranchId?: number // Track the active branch for this chat
 }
 
 export interface Message {
@@ -25,6 +26,9 @@ export interface Message {
   meta?: any
   context?: number[]
   createdAt: Date
+  parentId?: number // ID of the parent message (for branching)
+  branchId?: number // ID to group messages in the same branch
+  order?: number // Order in the conversation
 }
 
 // Delete the existing database to resolve version conflicts
@@ -43,8 +47,8 @@ class ChatDatabase extends Dexie {
   constructor() {
     super('ChatDatabase')
     this.version(10).stores({
-      chats: '++id,name,model,createdAt',
-      messages: '++id,chatId,role,content,meta,context,createdAt',
+      chats: '++id,name,model,createdAt,activeBranchId',
+      messages: '++id,chatId,role,content,meta,context,createdAt,parentId,branchId,order',
       config: '++id,model,systemPrompt,createdAt',
     })
 

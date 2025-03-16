@@ -3,6 +3,9 @@ import { Chat, db, Message } from './database'
 import { historyMessageLength, currentModel, useConfig } from './appConfig'
 import { useAI } from './useAI.ts'
 import { ChatCompletedResponse, ChatPartResponse, useApi } from './api.ts'
+import { v4 as uuidv4 } from 'uuid'
+import { useModels } from './models'
+import { useToast } from 'vue-toast-notification'
 
 interface ChatExport extends Chat {
   messages: Message[]
@@ -14,6 +17,11 @@ const activeChat = ref<Chat | null>(null)
 const messages = ref<Message[]>([])
 const systemPrompt = ref<Message>()
 const ongoingAiMessages = ref<Map<number, Message>>(new Map())
+const currentChatId = ref<number | null>(null)
+const isGenerating = ref(false)
+const abortController = ref<AbortController | null>(null)
+const streamingMessage = ref<Message | null>(null)
+const isStreaming = computed(() => streamingMessage.value !== null)
 
 // Database Layer
 const dbLayer = {
@@ -69,6 +77,9 @@ const dbLayer = {
 export function useChats() {
   const { generate } = useAI()
   const { abort } = useApi()
+  const $toast = useToast()
+  const { getSystemPrompt } = useConfig()
+  const { getModel } = useModels()
 
   // Computed
   const sortedChats = computed<Chat[]>(() =>
@@ -142,7 +153,7 @@ export function useChats() {
       chats.value.push(newChat)
       setActiveChat(newChat)
       setMessages([])
-      await addSystemMessage(await useConfig().getCurrentSystemMessage())
+      await addSystemMessage(await getSystemPrompt())
     } catch (error) {
       console.error('Failed to start a new chat:', error)
     }
@@ -472,6 +483,266 @@ export function useChats() {
     }
   }
 
+  const getCurrentChat = async () => {
+    if (!currentChatId.value) return null
+    return await dbLayer.getChat(currentChatId.value)
+  }
+
+  const getActiveBranchId = async () => {
+    const chat = await getCurrentChat()
+    return chat?.activeBranchId
+  }
+
+  const setActiveBranch = async (branchId: number) => {
+    if (!currentChatId.value) return
+    
+    console.log(`Setting active branch to ${branchId} for chat ${currentChatId.value}`)
+    await dbLayer.updateChat(currentChatId.value, { activeBranchId: branchId })
+    
+    // Reload messages for the current chat with the new active branch
+    await loadMessages()
+  }
+
+  const createNewBranch = async (parentMessageId: number) => {
+    if (!currentChatId.value) return
+    
+    // Get the parent message
+    const parentMessage = await dbLayer.getMessages(currentChatId.value).then(messages => messages.find(m => m.id === parentMessageId))
+    if (!parentMessage) {
+      console.error(`Parent message ${parentMessageId} not found`)
+      return
+    }
+    
+    console.log(`Creating new branch from message ${parentMessageId}`)
+    
+    // Generate a new branch ID
+    const branchId = Date.now()
+    
+    // Set this as the active branch
+    await setActiveBranch(branchId)
+    
+    return branchId
+  }
+
+  const loadMessages = async () => {
+    console.log('Loading messages for chat', currentChatId.value)
+    if (!currentChatId.value) {
+      messages.value = []
+      return
+    }
+
+    try {
+      const chat = await getCurrentChat()
+      const activeBranchId = chat?.activeBranchId
+      
+      console.log(`Loading messages for chat ${currentChatId.value}, active branch: ${activeBranchId}`)
+      
+      let chatMessages
+      if (activeBranchId) {
+        // Load messages for the active branch
+        chatMessages = await dbLayer.getMessages(currentChatId.value).then(messages => messages.filter(m => m.branchId === activeBranchId || m.branchId === undefined))
+      } else {
+        // Load all messages for the chat (no branching)
+        chatMessages = await dbLayer.getMessages(currentChatId.value)
+      }
+      
+      messages.value = chatMessages
+      console.log(`Loaded ${chatMessages.length} messages`)
+    } catch (error) {
+      console.error('Error loading messages:', error)
+      $toast.error('Failed to load messages')
+    }
+  }
+
+  const sendMessage = async (content: string) => {
+    console.log('Sending message:', content)
+    if (!currentChatId.value || !content.trim()) return
+
+    try {
+      const activeBranchId = await getActiveBranchId()
+      
+      // Create a new message
+      const userMessage: Message = {
+        chatId: currentChatId.value,
+        role: 'user',
+        content,
+        createdAt: new Date(),
+        branchId: activeBranchId,
+        order: messages.value.length
+      }
+
+      // Save the message to the database
+      const messageId = await dbLayer.addMessage(userMessage)
+      console.log('Saved user message with ID:', messageId)
+
+      // Add the message to the messages array
+      userMessage.id = messageId
+      messages.value.push(userMessage)
+
+      // Generate a response
+      await generateAIResponse()
+    } catch (error) {
+      console.error('Error sending message:', error)
+      $toast.error('Failed to send message')
+    }
+  }
+
+  const editMessageWithBranching = async (messageId: number, newContent: string) => {
+    console.log(`Editing message ${messageId} with new content:`, newContent)
+    
+    try {
+      const activeChat = await getCurrentChat()
+      if (!activeChat?.id) return
+      
+      // Get the message to edit
+      const allMessages = await dbLayer.getMessages(activeChat.id)
+      const message = allMessages.find(m => m.id === messageId)
+      if (!message) {
+        console.error(`Message ${messageId} not found`)
+        return
+      }
+      
+      // Create a new branch from this message
+      const newBranchId = await createNewBranch(messageId)
+      console.log(`Created new branch ${newBranchId} for edited message`)
+      
+      // Update the message in the database
+      await dbLayer.updateMessage(messageId, { 
+        content: newContent,
+        branchId: newBranchId
+      })
+      console.log(`Updated message ${messageId} in database`)
+      
+      // Update the message in the UI
+      const index = messages.value.findIndex(m => m.id === messageId)
+      if (index !== -1) {
+        messages.value[index].content = newContent
+        messages.value[index].branchId = newBranchId
+      }
+      
+      // Remove all subsequent messages from this branch
+      if (index !== -1) {
+        const subsequentMessages = messages.value.slice(index + 1)
+        console.log(`Removing ${subsequentMessages.length} subsequent messages`)
+        messages.value = messages.value.slice(0, index + 1)
+      }
+      
+      // Generate a new AI response
+      await sendUserMessage(newContent)
+    } catch (error) {
+      console.error('Error editing message with branching:', error)
+    }
+  }
+
+  const generateAIResponse = async () => {
+    if (!currentChatId.value) return
+    
+    try {
+      isGenerating.value = true
+      
+      const activeBranchId = await getActiveBranchId()
+      const systemPrompt = await getSystemPrompt()
+      const model = await getModel()
+      
+      // Create a new message for the AI response
+      const aiMessage: Message = {
+        chatId: currentChatId.value,
+        role: 'assistant',
+        content: '',
+        createdAt: new Date(),
+        branchId: activeBranchId,
+        order: messages.value.length
+      }
+      
+      // Save the message to the database
+      const messageId = await dbLayer.addMessage(aiMessage)
+      console.log('Created AI message with ID:', messageId)
+      
+      // Add the message to the messages array
+      aiMessage.id = messageId
+      messages.value.push(aiMessage)
+      
+      // Set the streaming message
+      streamingMessage.value = aiMessage
+      
+      // Create a new abort controller
+      abortController.value = new AbortController()
+      
+      // Generate the response
+      const contextMessages = messages.value.map(m => ({
+        role: m.role,
+        content: m.content
+      }))
+      
+      await generate(
+        model,
+        contextMessages,
+        systemPrompt,
+        historyMessageLength.value,
+        (data) => {
+          // Update the message in the UI
+          if (streamingMessage.value) {
+            streamingMessage.value.content = data.message.content
+          }
+          
+          // Update the message in the database
+          if (messageId) {
+            dbLayer.updateMessage(messageId, { content: data.message.content })
+          }
+        },
+        (data) => {
+          console.log('Response completed')
+          handleAiCompletion(data, currentChatId.value!)
+        },
+        { signal: abortController.value.signal }
+      )
+      
+      // Reset the streaming message
+      streamingMessage.value = null
+    } catch (error) {
+      console.error('Error generating AI response:', error)
+      if (error.name !== 'AbortError') {
+        $toast.error('Failed to generate AI response')
+      }
+    } finally {
+      isGenerating.value = false
+      abortController.value = null
+    }
+  }
+
+  const getBranches = async () => {
+    const activeChat = await getCurrentChat()
+    if (!activeChat?.id) return []
+    
+    try {
+      // Get all unique branch IDs for this chat
+      const allMessages = await dbLayer.getMessages(activeChat.id)
+      
+      // Group messages by branch ID
+      const branches = allMessages.reduce((acc, message) => {
+        if (message.branchId) {
+          if (!acc[message.branchId]) {
+            acc[message.branchId] = []
+          }
+          acc[message.branchId].push(message)
+        }
+        return acc
+      }, {} as Record<number, Message[]>)
+      
+      // Convert to array and sort by creation date (newest first)
+      return Object.entries(branches)
+        .map(([branchId, messages]) => ({
+          id: Number(branchId),
+          messages,
+          createdAt: Math.max(...messages.map(m => m.createdAt.getTime()))
+        }))
+        .sort((a, b) => b.createdAt - a.createdAt)
+    } catch (error) {
+      console.error('Error getting branches:', error)
+      return []
+    }
+  }
+
   return {
     chats,
     sortedChats,
@@ -492,6 +763,17 @@ export function useChats() {
     abort,
     exportChats,
     importChats,
-    editMessage
+    editMessage,
+    currentChatId,
+    isGenerating,
+    isStreaming,
+    streamingMessage,
+    loadMessages,
+    sendMessage,
+    getBranches,
+    setActiveBranch,
+    createNewBranch,
+    getActiveBranchId,
+    editMessageWithBranching
   }
 }
