@@ -167,6 +167,8 @@ export function useChats() {
   }
 
   const addUserMessage = async (content: string) => {
+    console.log('Adding user message:', content)
+    
     if (!activeChat.value) {
       console.warn('There was no active chat.')
       return
@@ -181,26 +183,41 @@ export function useChats() {
     }
 
     try {
+      console.log('Saving message to database...')
       message.id = await dbLayer.addMessage(message)
+      console.log('Message saved with ID:', message.id)
+      
       messages.value.push(message)
+      console.log('Message added to UI, messages count:', messages.value.length)
 
+      console.log('Generating AI response...')
       await generate(
         currentModel.value,
         messages.value,
         systemPrompt.value,
         historyMessageLength.value,
-        (data) => handleAiPartialResponse(data, currentChatId),
-        (data) => handleAiCompletion(data, currentChatId),
+        (data) => {
+          console.log('Partial response received:', data.message.content.substring(0, 20) + '...')
+          handleAiPartialResponse(data, currentChatId)
+        },
+        (data) => {
+          console.log('Response completed')
+          handleAiCompletion(data, currentChatId)
+        },
       )
+      console.log('AI response generation completed')
+      return true
     } catch (error) {
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
+          console.log('Request aborted')
           ongoingAiMessages.value.delete(currentChatId)
           return
         }
       }
 
       console.error('Failed to add user message:', error)
+      throw error
     }
   }
 
@@ -233,21 +250,30 @@ export function useChats() {
   }
 
   const handleAiPartialResponse = (data: ChatPartResponse, chatId: number) => {
-    ongoingAiMessages.value.has(chatId)
-      ? appendToAiMessage(data.message.content, chatId)
-      : startAiMessage(data.message.content, chatId)
+    console.log('Handling partial response for chat ID:', chatId)
+    
+    if (ongoingAiMessages.value.has(chatId)) {
+      console.log('Appending to existing AI message')
+      appendToAiMessage(data.message.content, chatId)
+    } else {
+      console.log('Starting new AI message')
+      startAiMessage(data.message.content, chatId)
+    }
   }
 
   const handleAiCompletion = async (data: ChatCompletedResponse, chatId: number) => {
+    console.log('Handling completion for chat ID:', chatId)
+    
     const aiMessage = ongoingAiMessages.value.get(chatId)
     if (aiMessage) {
       try {
+        console.log('Finalizing AI message with ID:', aiMessage.id)
         ongoingAiMessages.value.delete(chatId)
       } catch (error) {
         console.error('Failed to finalize AI message:', error)
       }
     } else {
-      console.error('no ongoing message to finalize:')
+      console.error('No ongoing message to finalize for chat ID:', chatId)
       debugger
     }
   }
@@ -289,6 +315,8 @@ export function useChats() {
   }
 
   const startAiMessage = async (initialContent: string, chatId: number) => {
+    console.log('Starting AI message for chat ID:', chatId)
+    
     const message: Message = {
       chatId: chatId,
       role: 'assistant',
@@ -297,30 +325,44 @@ export function useChats() {
     }
 
     try {
+      console.log('Saving AI message to database...')
       message.id = await dbLayer.addMessage(message)
+      console.log('AI message saved with ID:', message.id)
+      
       ongoingAiMessages.value.set(chatId, message)
+      console.log('Added message to ongoingAiMessages map')
+      
       messages.value.push(message)
+      console.log('Added message to UI, messages count:', messages.value.length)
     } catch (error) {
       console.error('Failed to start AI message:', error)
     }
   }
 
   const appendToAiMessage = async (content: string, chatId: number) => {
+    console.log('Appending to AI message for chat ID:', chatId)
+    
     const aiMessage = ongoingAiMessages.value.get(chatId)
     if (aiMessage) {
+      console.log('Found ongoing AI message with ID:', aiMessage.id)
       aiMessage.content += content
+      
       try {
+        console.log('Updating AI message in database...')
         await dbLayer.updateMessage(aiMessage.id!, { content: aiMessage.content })
+        console.log('AI message updated in database')
 
         // Only "load the messages" if we are on this chat atm.
         if (chatId == activeChat.value?.id) {
+          console.log('Reloading messages for active chat')
           setMessages(await dbLayer.getMessages(chatId))
+          console.log('Messages reloaded, count:', messages.value.length)
         }
       } catch (error) {
         console.error('Failed to append to AI message:', error)
       }
     } else {
-      console.log('No ongoing AI message?')
+      console.error('No ongoing AI message found for chat ID:', chatId)
     }
   }
 

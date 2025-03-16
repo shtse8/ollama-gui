@@ -124,42 +124,61 @@ export const useApi = () => {
     request: ChatRequest,
     onDataReceived: (data: any) => void,
   ): Promise<any[]> => {
-    const res = await fetch(getApiUrl('/chat'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(request),
-      signal: signal.value,
-    })
+    console.log('API: generateChat called with model:', request.model)
+    console.log('API: Request messages count:', request.messages?.length)
+    
+    try {
+      console.log('API: Sending fetch request to /chat endpoint')
+      const res = await fetch(getApiUrl('/chat'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(request),
+        signal: signal.value,
+      })
 
-    if (!res.ok) {
-      throw new Error('Network response was not ok')
-    }
-
-    const reader = res.body?.getReader()
-    let results: ChatResponse[] = []
-
-    if (reader) {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) {
-          break
-        }
-
-        try {
-          const chunk = new TextDecoder().decode(value)
-          const parsedChunk: ChatPartResponse = JSON.parse(chunk)
-
-          onDataReceived(parsedChunk)
-          results.push(parsedChunk)
-        } catch (e) {
-          // Carry on...
-        }
+      if (!res.ok) {
+        console.error('API: Network response was not ok, status:', res.status)
+        throw new Error('Network response was not ok')
       }
-    }
 
-    return results
+      console.log('API: Fetch request successful, reading response body')
+      const reader = res.body?.getReader()
+      let results: ChatResponse[] = []
+
+      if (reader) {
+        console.log('API: Starting to read response stream')
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) {
+            console.log('API: Response stream complete')
+            break
+          }
+
+          try {
+            const chunk = new TextDecoder().decode(value)
+            console.log('API: Received chunk of data')
+            const parsedChunk: ChatPartResponse = JSON.parse(chunk)
+            console.log('API: Parsed chunk successfully')
+
+            onDataReceived(parsedChunk)
+            results.push(parsedChunk)
+          } catch (e) {
+            console.error('API: Error parsing chunk:', e)
+            // Carry on...
+          }
+        }
+      } else {
+        console.error('API: Could not get reader from response body')
+      }
+
+      console.log('API: generateChat completed, results count:', results.length)
+      return results
+    } catch (error) {
+      console.error('API: Error in generateChat:', error)
+      throw error
+    }
   }
 
   // Create a model

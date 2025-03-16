@@ -22,17 +22,30 @@ export const useAI = () => {
     onMessage?: (data: ChatResponse | ChatPartResponse | ChatCompletedResponse) => void,
     onDone?: (data: ChatCompletedResponse) => void,
   ) => {
+    console.log('Generating response with model:', model)
+    console.log('Messages count:', messages.length)
+    console.log('System prompt:', system ? 'present' : 'not present')
+    
     let chatHistory = messages.slice(-(historyMessageLength ?? 0))
+    console.log('Using history length:', historyMessageLength)
+    console.log('Chat history count:', chatHistory.length)
+    
     if (system) {
+      console.log('Adding system prompt to history')
       chatHistory.unshift(system)
     }
+    
+    console.log('Calling generateChat API...')
     await generateChat({ model, messages: chatHistory }, (data: ChatResponse) => {
       if (!data.done && onMessage) {
+        console.log('Received partial response')
         onMessage(data as ChatPartResponse)
       } else if (data.done && onDone) {
+        console.log('Received completion response')
         onDone(data as ChatCompletedResponse)
       }
     })
+    console.log('generateChat API call completed')
   }
 
   const refreshModels = async () => {
